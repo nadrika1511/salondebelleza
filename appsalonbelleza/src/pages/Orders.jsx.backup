@@ -1,0 +1,444 @@
+import { useState, useEffect } from 'react';
+import { Layout } from '../components/Layout';
+import { useAuth } from '../contexts/AuthContext';
+import { 
+  getOrdersByDate, 
+  searchOrdersByClient, 
+  getOrderById,
+  updateOrder, 
+  closeOrder,
+  reopenOrder
+} from '../services/orderService';
+import { getTodayDate, getYesterdayDate } from '../services/appointmentService';
+import { getAllStylists } from '../services/userService';
+import { getActiveServices } from '../services/serviceService';
+import { getActiveProducts } from '../services/productService';
+
+export const Orders = () => {
+  const { userData } = useAuth();
+  const [view, setView] = useState('today');
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  
+  const [stylists, setStylists] = useState([]);
+  const [services, setServices] = useState([]);
+  const [products, setProducts] = useState([]);
+  
+  const [searchTerm, setSearchTerm] = useState('');
+  const [editedOrder, setEditedOrder] = useState(null);
+  
+  const [productToAdd, setProductToAdd] = useState({
+    productId: '',
+    quantity: 1
+  });
+
+  useEffect(() => {
+    loadMasterData();
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+  }, [view]);
+
+  useEffect(() => {
+    if (view === 'history' && searchTerm.length > 0) {
+      searchOrders();
+    }
+  }, [searchTerm, view]);
+
+  const loadMasterData = async () => {
+    try {
+      const [stylistsData, servicesData, productsData] = await Promise.all([
+        getAllStylists(),
+        getActiveServices(),
+        getActiveProducts()
+      ]);
+      
+      setStylists(stylistsData);
+      setServices(servicesData);
+      setProducts(productsData);
+    } catch (error) {
+      console.error('Error:', error);
+    }
+  };
+
+  const loadOrders = async () => {
+    try {
+      setLoading(true);
+      let data = [];
+      
+      if (view === 'today') {
+        data = await getOrdersByDate(getTodayDate());
+      } else if (view === 'yesterday') {
+        data = await getOrdersByDate(getYesterdayDate());
+      }
+      
+      setOrders(data);
+    } catch (error) {
+      console.error('Error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const searchOrders = async () => {
+    try {
+      setLoading(true);
+      const data = await searchOrdersByClient(searchTerm);
+      setOrders(data);
+    } catch (error) {
+      console.error('Error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenOrder = async (order) => {
+    if (order.status === 'closed' && userData.rol !== 'propietario') {
+      alert('Solo el propietario puede editar comandas cerradas');
+      return;
+    }
+
+    if (!order.services || order.services.length === 0) {
+      const initialServices = services.map(service => ({
+        serviceId: service.id,
+        serviceName: service.name,
+        price: service.price,
+        stylistId: null,
+        stylistName: null,
+        selected: false
+      }));
+      order.services = initialServices;
+    }
+
+    if (!order.products) {
+      order.products = [];
+    }
+
+    if (!order.tips) {
+      order.tips = {};
+    }
+
+    setEditedOrder({ ...order });
+    setSelectedOrder(order);
+    setShowModal(true);
+  };
+
+  const handleSelectStylist = (serviceIndex, stylistId) => {
+    const stylist = stylists.find(s => s.id === stylistId);
+    
+    setEditedOrder(prev => {
+      const newServices = [...prev.services];
+      newServices[serviceIndex] = {
+        ...newServices[serviceIndex],
+        stylistId: stylist.id,
+        stylistName: stylist.nombre
+      };
+      return { ...prev, services: newServices };
+    });
+  };
+
+  const handleToggleService = (serviceIndex) => {
+    setEditedOrder(prev => {
+      const newServices = [...prev.services];
+      const service = newServices[serviceIndex];
+      
+      if (!service.stylistId) {
+        alert('Primero selecciona un estilista');
+        return prev;
+      }
+      
+      newServices[serviceIndex] = {
+        ...service,
+        selected: !service.selected
+      };
+      
+      return { ...prev, services: newServices };
+    });
+  };
+
+  const handleAddProduct = () => {
+    if (!productToAdd.productId) {
+      alert('Selecciona un producto');
+      return;
+    }
+
+    const product = products.find(p => p.id === productToAdd.productId);
+    const quantity = parseInt(productToAdd.quantity) || 1;
+
+    const newProduct = {
+      productId: product.id,
+      productName: product.name,
+      quantity,
+      price: product.price,
+      subtotal: product.price * quantity
+    };
+
+    setEditedOrder(prev => ({
+      ...prev,
+      products: [...(prev.products || []), newProduct]
+    }));
+
+    setProductToAdd({ productId: '', quantity: 1 });
+  };
+
+  const handleRemoveProduct = (index) => {
+    setEditedOrder(prev => ({
+      ...prev,
+      products: prev.products.filter((_, i) => i !== index)
+    }));
+  };
+
+  const handleTipChange = (stylistId, amount) => {
+    setEditedOrder(prev => {
+      const stylist = stylists.find(s => s.id === stylistId);
+      return {
+        ...prev,
+        tips: {
+          ...prev.tips,
+          [stylistId]: {
+            stylistName: stylist.nombre,
+            amount: parseInt(amount) || 0
+          }
+        }
+      };
+    });
+  };
+
+  const calculateTotals = () => {
+    if (!editedOrder) return { subtotalServices: 0, subtotalProducts: 0, subtotal: 0, totalTips: 0, total: 0 };
+
+    const subtotalServices = (editedOrder.services || [])
+      .filter(s => s.selected)
+      .reduce((sum, s) => sum + s.price, 0);
+
+    const subtotalProducts = (editedOrder.products || [])
+      .reduce((sum, p) => sum + p.subtotal, 0);
+
+    const subtotal = subtotalServices + subtotalProducts;
+
+    const totalTips = Object.values(editedOrder.tips || {})
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    const total = subtotal + totalTips;
+
+    return { subtotalServices, subtotalProducts, subtotal, totalTips, total };
+  };
+
+  const handleSaveOrder = async () => {
+    try {
+      const totals = calculateTotals();
+      
+      await updateOrder(editedOrder.id, {
+        services: editedOrder.services,
+        products: editedOrder.products,
+        tips: editedOrder.tips,
+        ...totals
+      });
+
+      alert('✓ Comanda guardada');
+      setShowModal(false);
+      setSelectedOrder(null);
+      setEditedOrder(null);
+      loadOrders();
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al guardar comanda');
+    }
+  };
+
+  const handleCloseOrder = () => {
+    const totals = calculateTotals();
+    if (totals.total === 0) {
+      alert('La comanda está vacía');
+      return;
+    }
+    setShowCloseModal(true);
+  };
+
+  const handleConfirmClose = async (paymentMethod) => {
+    try {
+      const totals = calculateTotals();
+      
+      await updateOrder(editedOrder.id, {
+        services: editedOrder.services,
+        products: editedOrder.products,
+        tips: editedOrder.tips,
+        ...totals
+      });
+
+      await closeOrder(editedOrder.id, paymentMethod, userData.uid);
+
+      alert('✓ Comanda cerrada');
+      setShowCloseModal(false);
+      setShowModal(false);
+      setSelectedOrder(null);
+      setEditedOrder(null);
+      loadOrders();
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al cerrar comanda');
+    }
+  };
+
+  const handleReopenOrder = async () => {
+    if (userData.rol !== 'propietario') {
+      alert('Solo el propietario puede reabrir comandas');
+      return;
+    }
+
+    try {
+      await reopenOrder(editedOrder.id);
+      alert('✓ Comanda reabierta');
+      
+      const updatedOrder = await getOrderById(editedOrder.id);
+      setEditedOrder(updatedOrder);
+      setSelectedOrder(updatedOrder);
+      loadOrders();
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al reabrir comanda');
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    if (status === 'closed') {
+      return <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">✓ Cerrada</span>;
+    }
+    return <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">📝 Abierta</span>;
+  };
+
+  const getSelectedStylists = () => {
+    if (!editedOrder) return [];
+    
+    const stylistIds = new Set();
+    (editedOrder.services || [])
+      .filter(s => s.selected && s.stylistId)
+      .forEach(s => stylistIds.add(s.stylistId));
+    
+    return Array.from(stylistIds).map(id => 
+      stylists.find(s => s.id === id)
+    ).filter(Boolean);
+  };
+
+  const totals = calculateTotals();
+
+  if (loading && view !== 'history') {
+    return (
+      <Layout>
+        <div className="flex justify-center py-12">
+          <div className="animate-spin text-6xl">⏳</div>
+        </div>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout>
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-3xl font-bold text-gray-800">🧾 Comandas</h2>
+          
+          <div className="flex items-center gap-2 bg-white rounded-xl shadow-sm p-1">
+            <button 
+              onClick={() => setView('today')}
+              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
+                view === 'today' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              📅 Hoy
+            </button>
+            <button 
+              onClick={() => setView('yesterday')}
+              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
+                view === 'yesterday' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              ⏮️ Ayer
+            </button>
+            <button 
+              onClick={() => setView('history')}
+              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
+                view === 'history' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              📚 Histórico
+            </button>
+          </div>
+        </div>
+
+        {view === 'history' && (
+          <div className="bg-white rounded-2xl shadow-sm p-4">
+            <div className="relative">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="input-field pl-12"
+                placeholder="Buscar por nombre de cliente..."
+              />
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">🔍</span>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-4">
+          {orders.map(order => (
+            <div 
+              key={order.id} 
+              className="card hover:shadow-xl transition-shadow cursor-pointer"
+              onClick={() => handleOpenOrder(order)}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-16 h-16 bg-gradient-to-br from-primary-500 to-pink-600 rounded-xl flex items-center justify-center">
+                      <span className="text-white font-black text-lg">#{order.orderNumber}</span>
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-800">{order.clientName}</h3>
+                      <p className="text-sm text-gray-600">{order.date} • {order.clientPhone}</p>
+                    </div>
+                    {getStatusBadge(order.status)}
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-3 bg-gray-50 p-3 rounded-xl text-sm">
+                    <div>
+                      <p className="text-xs text-gray-500">Servicios</p>
+                      <p className="font-bold text-gray-800">
+                        {(order.services || []).filter(s => s.selected).length}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Subtotal</p>
+                      <p className="font-bold text-gray-800">Q{order.subtotal || 0}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Propinas</p>
+                      <p className="font-bold text-green-600">Q{order.totalTips || 0}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Total</p>
+                      <p className="font-bold text-primary-600">Q{order.total || 0}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {orders.length === 0 && (
+            <div className="card text-center py-16">
+              <div className="text-6xl mb-4">🧾</div>
+              <h3 className="text-2xl font-bold text-gray-800 mb-2">
+                {view === 'history' && !searchTerm 
+                  ? 'Escribe para buscar comandas' 
+                  : 'No hay comandas'}
+              </h3>
+            </div>
+          )}
+        </div>
+      </div>
