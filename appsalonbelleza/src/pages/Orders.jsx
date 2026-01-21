@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Layout } from '../components/Layout';
 import { useAuth } from '../contexts/AuthContext';
 import { 
@@ -78,22 +78,16 @@ export const Orders = () => {
   };
 
   const loadOrders = async () => {
-    console.log("🔍 loadOrders ejecutándose, view:", view);
     try {
       setLoading(true);
       let data = [];
       
       if (view === 'today') {
-        const todayDate = getTodayDate();
-        console.log("📅 Buscando órdenes para fecha:", todayDate);
         data = await getOrdersByDate(getTodayDate());
       } else if (view === 'yesterday') {
-        const todayDate = getTodayDate();
-        console.log("📅 Buscando órdenes para fecha:", todayDate);
         data = await getOrdersByDate(getYesterdayDate());
       }
       
-      console.log("📦 Datos cargados:", data);
       setOrders(data);
     } catch (error) {
       console.error('Error:', error);
@@ -106,7 +100,6 @@ export const Orders = () => {
     try {
       setLoading(true);
       const data = await searchOrdersByClient(searchTerm);
-      console.log("📦 Datos cargados:", data);
       setOrders(data);
     } catch (error) {
       console.error('Error:', error);
@@ -138,9 +131,6 @@ export const Orders = () => {
     }
 
     if (!order.tips) {
-    if (!order.packagesSold) {
-      order.packagesSold = [];
-    }
       order.tips = {};
     }
 
@@ -266,7 +256,7 @@ export const Orders = () => {
   };
 
   const calculateTotals = () => {
-    if (!editedOrder) return { subtotalServices: 0, subtotalProducts: 0, subtotal: 0, totalTips: 0, total: 0 };
+    if (!editedOrder) return { subtotalServices: 0, subtotalProducts: 0, subtotalPackages: 0, subtotal: 0, totalTips: 0, total: 0 };
 
     const subtotalServices = (editedOrder.services || [])
       .filter(s => s.selected)
@@ -275,14 +265,17 @@ export const Orders = () => {
     const subtotalProducts = (editedOrder.products || [])
       .reduce((sum, p) => sum + p.subtotal, 0);
 
-    const subtotal = subtotalServices + subtotalProducts;
+    const subtotalPackages = (editedOrder.packagesSold || [])
+      .reduce((sum, p) => sum + p.subtotal, 0);
+
+    const subtotal = subtotalServices + subtotalProducts + subtotalPackages;
 
     const totalTips = Object.values(editedOrder.tips || {})
       .reduce((sum, t) => sum + (t.amount || 0), 0);
 
     const total = subtotal + totalTips;
 
-    return { subtotalServices, subtotalProducts, subtotal, totalTips, total };
+    return { subtotalServices, subtotalProducts, subtotalPackages, subtotal, totalTips, total };
   };
 
   const handleSaveOrder = async () => {
@@ -306,15 +299,6 @@ export const Orders = () => {
       alert('Error al guardar comanda');
     }
   };
-
-  const canPayWithPackage = () => {
-    if (!editedOrder) return false;
-    const hasPackagesSold = (editedOrder.packagesSold || []).length > 0;
-    const hasServices = (editedOrder.services || []).some(s => s.selected);
-    const hasProducts = (editedOrder.products || []).length > 0;
-    return hasPackagesSold && !hasServices && !hasProducts;
-  };
-
 
   const handleCloseOrder = () => {
     const totals = calculateTotals();
@@ -380,17 +364,23 @@ export const Orders = () => {
   const getSelectedStylists = () => {
     if (!editedOrder) return [];
     
-    const stylistIds = new Set();
+    const stylistsMap = new Map();
+    
     (editedOrder.services || [])
       .filter(s => s.selected && s.stylistId)
-      .forEach(s => stylistIds.add(s.stylistId));
+      .forEach(s => stylistsMap.set(s.stylistId, s.stylistName));
     
-    return Array.from(stylistIds).map(id => 
-      stylists.find(s => s.id === id)
-    ).filter(Boolean);
+    (editedOrder.products || [])
+      .filter(p => p.stylistId)
+      .forEach(p => stylistsMap.set(p.stylistId, p.stylistName));
+    
+    (editedOrder.packagesSold || [])
+      .filter(pkg => pkg.stylistId)
+      .forEach(pkg => stylistsMap.set(pkg.stylistId, pkg.stylistName));
+    
+    return Array.from(stylistsMap.entries()).map(([id, nombre]) => ({ id, nombre }));
   };
 
-  console.log("🔍 editedOrder.packagesSold:", editedOrder?.packagesSold);
   const totals = calculateTotals();
 
   if (loading && view !== 'history') {
@@ -608,6 +598,18 @@ export const Orders = () => {
                       </select>
                     </div>
                     <div className="col-span-3">
+                      <select
+                        value={productToAdd.stylistId}
+                        onChange={(e) => setProductToAdd({...productToAdd, stylistId: e.target.value})}
+                        className="input-field"
+                      >
+                        <option value="">Estilista...</option>
+                        {stylists.map(s => (
+                          <option key={s.id} value={s.id}>{s.nombre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-3">
                       <input
                         type="number"
                         value={productToAdd.quantity}
@@ -630,7 +632,10 @@ export const Orders = () => {
                     <div key={index} className="bg-white p-3 rounded-lg flex justify-between items-center">
                       <div className="flex-1">
                         <p className="font-semibold text-gray-800">{product.productName}</p>
-                        <p className="text-sm text-gray-600">Cantidad: {product.quantity} × Q{product.price}</p>
+                        <p className="text-sm text-gray-600">Cantidad: {product.quantity}
+                        {product.stylistName && (
+                          <p className="text-xs text-primary-600">Vendido por: {product.stylistName}</p>
+                        )} × Q{product.price}</p>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-gray-800">Q{product.subtotal}</span>
@@ -670,6 +675,18 @@ export const Orders = () => {
                       </select>
                     </div>
                     <div className="col-span-3">
+                      <select
+                        value={packageToAdd.stylistId}
+                        onChange={(e) => setPackageToAdd({...packageToAdd, stylistId: e.target.value})}
+                        className="input-field"
+                      >
+                        <option value="">Estilista...</option>
+                        {stylists.map(s => (
+                          <option key={s.id} value={s.id}>{s.nombre}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-3">
                       <input
                         type="number"
                         value={packageToAdd.quantity}
@@ -692,7 +709,10 @@ export const Orders = () => {
                     <div key={index} className="bg-white p-3 rounded-lg flex justify-between items-center">
                       <div className="flex-1">
                         <p className="font-semibold text-gray-800">{pkg.packageName}</p>
-                        <p className="text-sm text-gray-600">{pkg.quantity} {pkg.serviceName} (x{pkg.quantityPurchased} paquete{pkg.quantityPurchased > 1 ? 's' : ''})</p>
+                        <p className="text-sm text-gray-600">{pkg.quantity} {pkg.serviceName}
+                        {pkg.stylistName && (
+                          <p className="text-xs text-primary-600">Vendido por: {pkg.stylistName}</p>
+                        )} (x{pkg.quantityPurchased} paquete{pkg.quantityPurchased > 1 ? 's' : ''})</p>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-gray-800">Q{pkg.subtotal}</span>
