@@ -1,0 +1,733 @@
+import { useState, useEffect } from 'react';
+import { Layout } from '../components/Layout';
+import { WeekCalendar } from '../components/WeekCalendar';
+import { MonthCalendar } from '../components/MonthCalendar';
+import { DayCalendar } from '../components/DayCalendar';
+import { 
+  getAppointmentsByDateRange, 
+  getAppointmentsByDate,
+  createAppointment,
+  updateAppointment,
+  deleteAppointment,
+  getTodayDate,
+  getWeekDates
+} from '../services/appointmentService';
+import { db } from '../config/firebase';
+import { getDoc, doc } from 'firebase/firestore';
+import { getAllClients, searchClients, createClient } from '../services/clientService';
+import { getAllStylists } from '../services/userService';
+import { getActiveServices } from '../services/serviceService';
+
+export const Appointments = () => {
+  const [view, setView] = useState('week'); // week, month, day
+  const [selectedDate, setSelectedDate] = useState(getTodayDate());
+  const [appointments, setAppointments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [selectedTime, setSelectedTime] = useState('09:00');
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedAppointment, setSelectedAppointment] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  
+  // Datos para el modal
+  const [clients, setClients] = useState([]);
+  const [stylists, setStylists] = useState([]);
+  const [services, setServices] = useState([]);
+  const [clientSearch, setClientSearch] = useState('');
+  const [filteredClients, setFilteredClients] = useState([]);
+  
+  // Form data
+  const [formData, setFormData] = useState({
+    clientId: '',
+    clientName: '',
+    clientPhone: '',
+    date: getTodayDate(),
+    startTime: '09:00',
+    notes: '',
+    services: []
+  });
+
+  useEffect(() => {
+    loadInitialData();
+  }, []);
+
+  useEffect(() => {
+    loadAppointments();
+  }, [selectedDate, view]);
+
+  useEffect(() => {
+    if (clientSearch.length > 0) {
+      const filtered = clients.filter(c => 
+        c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
+        c.phone.includes(clientSearch)
+      );
+      setFilteredClients(filtered);
+    } else {
+      setFilteredClients([]);
+    }
+  }, [clientSearch, clients]);
+
+  const loadInitialData = async () => {
+    try {
+      const [clientsData, stylistsData, servicesData] = await Promise.all([
+        getAllClients(),
+        getAllStylists(),
+        getActiveServices()
+      ]);
+      
+      setClients(clientsData);
+      setStylists(stylistsData);
+      setServices(servicesData);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+  };
+
+  const loadAppointments = async () => {
+    try {
+      setLoading(true);
+      let data = [];
+      
+      if (view === 'week') {
+        const weekDates = getWeekDates(selectedDate);
+        data = await getAppointmentsByDateRange(weekDates[0], weekDates[6]);
+      } else if (view === 'month') {
+        const date = new Date(selectedDate);
+        const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
+        const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).toISOString().split('T')[0];
+        data = await getAppointmentsByDateRange(firstDay, lastDay);
+      } else {
+        data = await getAppointmentsByDate(selectedDate);
+      }
+      
+      setAppointments(data);
+    } catch (error) {
+      console.error('Error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDateChange = (date, time = null) => {
+    setSelectedDate(date);
+    if (time) {
+      setSelectedTime(time);
+      setFormData(prev => ({ ...prev, date, startTime: time }));
+      setShowModal(true);
+    }
+  };
+
+  const handleAppointmentClick = async (appointment) => {
+    // Verificar si la cita tiene una comanda asociada y si está cerrada
+    const isClosed = appointment.orderClosed === true;
+    
+    setSelectedAppointment(appointment);
+    
+    if (isClosed) {
+      // Si la comanda está cerrada, solo mostrar info (sin editar/eliminar)
+      alert(`📋 Cita: ${appointment.clientName}\n⏰ ${appointment.date} ${appointment.startTime}\n🔒 Comanda cerrada - No se puede modificar`);
+      return;
+    }
+    
+    // Si no está cerrada, cargar datos en el formulario para editar
+    setIsEditMode(true);
+    setFormData({
+      clientId: appointment.clientId || '',
+      clientName: appointment.clientName || '',
+      clientPhone: appointment.clientPhone || '',
+      date: appointment.date,
+      startTime: appointment.startTime,
+      services: appointment.services || [],
+      notes: appointment.notes || ''
+    });
+    setShowModal(true);
+  };
+
+  const handleDeleteAppointment = async () => {
+    if (!selectedAppointment) return;
+    
+    try {
+      await deleteAppointment(selectedAppointment.id);
+      setShowDeleteConfirm(false);
+      setSelectedAppointment(null);
+      setShowModal(false);
+      loadAppointments();
+      alert('✅ Cita eliminada exitosamente');
+    } catch (error) {
+      console.error('Error:', error);
+      alert('❌ Error al eliminar la cita');
+    }
+  };
+
+  const handleUpdateAppointment = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const appointmentData = {
+        clientId: formData.clientId,
+        clientName: formData.clientName,
+        clientPhone: formData.clientPhone,
+        date: formData.date,
+        startTime: formData.startTime,
+        totalServices: formData.services.length,
+        subtotal: formData.services.reduce((sum, s) => sum + s.price, 0),
+        discount: 0,
+        total: formData.services.reduce((sum, s) => sum + s.price, 0),
+        notes: formData.notes
+      };
+      
+      await updateAppointment(selectedAppointment.id, appointmentData);
+      
+      setShowModal(false);
+      setIsEditMode(false);
+      setSelectedAppointment(null);
+      resetForm();
+      loadAppointments();
+      alert('✅ Cita actualizada exitosamente');
+    } catch (error) {
+      console.error('Error:', error);
+      alert('❌ Error al actualizar la cita');
+    }
+  };
+
+  const handlePrevious = () => {
+    const current = new Date(selectedDate);
+    if (view === 'week') {
+      current.setDate(current.getDate() - 7);
+    } else if (view === 'month') {
+      current.setMonth(current.getMonth() - 1);
+    } else {
+      current.setDate(current.getDate() - 1);
+    }
+    setSelectedDate(current.toISOString().split('T')[0]);
+  };
+
+  const handleNext = () => {
+    const current = new Date(selectedDate);
+    if (view === 'week') {
+      current.setDate(current.getDate() + 7);
+    } else if (view === 'month') {
+      current.setMonth(current.getMonth() + 1);
+    } else {
+      current.setDate(current.getDate() + 1);
+    }
+    setSelectedDate(current.toISOString().split('T')[0]);
+  };
+
+  const handleToday = () => {
+    setSelectedDate(getTodayDate());
+  };
+
+  const handleSelectClient = (client) => {
+    setFormData(prev => ({
+      ...prev,
+      clientId: client.id,
+      clientName: client.name,
+      clientPhone: client.phone
+    }));
+    setClientSearch(client.name);
+    setFilteredClients([]);
+  };
+
+  const handleAddService = () => {
+    if (stylists.length === 0 || services.length === 0) {
+      alert('No hay estilistas o servicios disponibles');
+      return;
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      services: [...prev.services, {
+        serviceId: services[0].id,
+        serviceName: services[0].name,
+        stylistId: stylists[0].id,
+        stylistName: stylists[0].nombre,
+        price: services[0].price,
+        duration: services[0].duration,
+        commissionRate: services[0].commissionRate || 30
+      }]
+    }));
+  };
+
+  const handleRemoveService = (index) => {
+    setFormData(prev => ({
+      ...prev,
+      services: prev.services.filter((_, i) => i !== index)
+    }));
+  };
+
+  const handleServiceChange = (index, field, value) => {
+    setFormData(prev => {
+      const newServices = [...prev.services];
+      
+      if (field === 'serviceId') {
+        const service = services.find(s => s.id === value);
+        newServices[index] = {
+          ...newServices[index],
+          serviceId: service.id,
+          serviceName: service.name,
+          price: service.price,
+          duration: service.duration,
+          commissionRate: service.commissionRate || 30
+        };
+      } else if (field === 'stylistId') {
+        const stylist = stylists.find(s => s.id === value);
+        newServices[index] = {
+          ...newServices[index],
+          stylistId: stylist.id,
+          stylistName: stylist.nombre
+        };
+      }
+      
+      return { ...prev, services: newServices };
+    });
+  };
+
+  // Manejar clic en una cita para editarla
+
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    // Si está en modo edición, usar handleUpdateAppointment
+    if (isEditMode) {
+      return handleUpdateAppointment(e);
+    }
+    
+    if (!formData.clientName || formData.services.length === 0) {
+      alert('Completa los datos del cliente y agrega al menos un servicio');
+      return;
+    }
+
+    try {
+      // Crear cliente si es nuevo
+      let clientId = formData.clientId;
+      if (!clientId && formData.clientName) {
+        const newClient = await createClient({
+          name: formData.clientName,
+          phone: formData.clientPhone || '',
+          email: '',
+          notes: ''
+        });
+        clientId = newClient.id;
+      }
+
+      const appointmentData = {
+        clientId,
+        clientName: formData.clientName,
+        clientPhone: formData.clientPhone || '',
+        date: formData.date,
+        startTime: formData.startTime,
+        totalServices: formData.services.length,
+        subtotal: formData.services.reduce((sum, s) => sum + s.price, 0),
+        discount: 0,
+        total: formData.services.reduce((sum, s) => sum + s.price, 0),
+        paid: 0,
+        pending: formData.services.reduce((sum, s) => sum + s.price, 0),
+        fullyPaid: false,
+        notes: formData.notes
+      };
+
+      await createAppointment(appointmentData);
+      
+      setShowModal(false);
+      resetForm();
+      loadAppointments();
+      alert('¡Cita creada exitosamente!');
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al crear la cita');
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      clientId: '',
+      clientName: '',
+      clientPhone: '',
+      date: getTodayDate(),
+      startTime: '09:00',
+      notes: '',
+      services: []
+    });
+    setClientSearch('');
+    setFilteredClients([]);
+  };
+
+  if (loading && appointments.length === 0) {
+    return (
+      <Layout>
+        <div className="flex justify-center py-12">
+          <div className="animate-spin text-6xl">⏳</div>
+        </div>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout>
+      <div className="space-y-6">
+        {/* Header con controles */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-3xl font-bold text-gray-800">📅 Citas</h2>
+          
+          <div className="flex items-center gap-3">
+            {/* Navegación */}
+            <div className="flex items-center gap-2 bg-white rounded-xl shadow-sm p-1">
+              <button onClick={handlePrevious} className="btn-secondary py-2">
+                ←
+              </button>
+              <button onClick={handleToday} className="btn-secondary py-2">
+                Hoy
+              </button>
+              <button onClick={handleNext} className="btn-secondary py-2">
+                →
+              </button>
+            </div>
+
+            {/* Selector de vista */}
+            <div className="flex items-center gap-2 bg-white rounded-xl shadow-sm p-1">
+              <button 
+                onClick={() => setView('day')}
+                className={`px-4 py-2 rounded-lg font-semibold transition-all ${
+                  view === 'day' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Día
+              </button>
+              <button 
+                onClick={() => setView('week')}
+                className={`px-4 py-2 rounded-lg font-semibold transition-all ${
+                  view === 'week' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Semana
+              </button>
+              <button 
+                onClick={() => setView('month')}
+                className={`px-4 py-2 rounded-lg font-semibold transition-all ${
+                  view === 'month' ? 'bg-primary-500 text-white' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                Mes
+              </button>
+            </div>
+
+            {/* Botón nueva cita */}
+            <button 
+              onClick={() => {
+                setFormData(prev => ({ ...prev, date: selectedDate, startTime: selectedTime }));
+                setShowModal(true);
+              }}
+              className="btn-primary"
+            >
+              ➕ Nueva Cita
+            </button>
+          </div>
+        </div>
+
+        {/* Leyenda de estados */}
+        <div className="flex flex-wrap items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
+          <span className="text-sm font-semibold text-gray-600">Estados:</span>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-blue-400 rounded"></div>
+            <span className="text-sm">📅 Programada</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-yellow-400 rounded"></div>
+            <span className="text-sm">⏳ En Progreso</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-green-400 rounded"></div>
+            <span className="text-sm">✅ Completada</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-red-400 rounded"></div>
+            <span className="text-sm">❌ Cancelada</span>
+          </div>
+        </div>
+
+        {/* Calendario */}
+        {view === 'week' && (
+          <WeekCalendar 
+            selectedDate={selectedDate}
+            onDateChange={handleDateChange}
+            appointments={appointments}
+            onAppointmentClick={handleAppointmentClick}
+          />
+        )}
+        
+        {view === 'month' && (
+          <MonthCalendar 
+            selectedDate={selectedDate}
+            onDateChange={handleDateChange}
+            appointments={appointments}
+          />
+        )}
+        
+        {view === 'day' && (
+          <DayCalendar 
+            selectedDate={selectedDate}
+            appointments={appointments}
+            onTimeClick={(time) => {
+              setSelectedTime(time);
+              setFormData(prev => ({ ...prev, startTime: time }));
+              setShowModal(true);
+            }}
+          />
+        )}
+      </div>
+
+      {/* Modal Nueva Cita */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full my-8">
+            <div className="p-6 border-b bg-gradient-to-r from-primary-500 to-pink-500 text-white rounded-t-2xl">
+              <div className="flex justify-between items-center">
+                <h3 className="text-2xl font-bold">➕ Nueva Cita</h3>
+                <button 
+                  onClick={() => { setShowModal(false); resetForm(); }}
+                  className="text-white hover:bg-white/20 w-10 h-10 rounded-lg transition-colors text-2xl"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleSubmit} className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+              {/* Cliente */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  Cliente *
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={clientSearch}
+                    onChange={(e) => setClientSearch(e.target.value)}
+                    className="input-field"
+                    placeholder="Buscar cliente o escribir nombre nuevo"
+                    required
+                  />
+                  {filteredClients.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border-2 border-gray-300 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                      {filteredClients.map(client => (
+                        <div
+                          key={client.id}
+                          onClick={() => handleSelectClient(client)}
+                          className="p-3 hover:bg-primary-50 cursor-pointer border-b last:border-b-0"
+                        >
+                          <p className="font-semibold">{client.name}</p>
+                          <p className="text-sm text-gray-600">{client.phone}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Teléfono */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  Teléfono
+                </label>
+                <input
+                  type="tel"
+                  value={formData.clientPhone}
+                  onChange={(e) => setFormData({...formData, clientPhone: e.target.value})}
+                  className="input-field"
+                  placeholder="+502 1234-5678"
+                />
+              </div>
+
+              {/* Fecha y Hora */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">
+                    Fecha *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.date}
+                    onChange={(e) => setFormData({...formData, date: e.target.value})}
+                    className="input-field"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">
+                    Hora *
+                  </label>
+                  <input
+                    type="time"
+                    value={formData.startTime}
+                    onChange={(e) => setFormData({...formData, startTime: e.target.value})}
+                    className="input-field"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Servicios */}
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <label className="text-sm font-bold text-gray-700">
+                    Servicios *
+                  </label>
+                  <button 
+                    type="button"
+                    onClick={handleAddService}
+                    className="bg-primary-500 text-white px-4 py-2 rounded-lg hover:bg-primary-600 transition-all text-sm font-semibold"
+                  >
+                    ➕ Agregar Servicio
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {formData.services.map((service, index) => (
+                    <div key={index} className="bg-gray-50 p-4 rounded-xl border-2 border-gray-200">
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">
+                            Servicio
+                          </label>
+                          <select
+                            value={service.serviceId}
+                            onChange={(e) => handleServiceChange(index, 'serviceId', e.target.value)}
+                            className="input-field text-sm"
+                          >
+                            {services.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} - Q{s.price}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">
+                            Estilista
+                          </label>
+                          <select
+                            value={service.stylistId}
+                            onChange={(e) => handleServiceChange(index, 'stylistId', e.target.value)}
+                            className="input-field text-sm"
+                          >
+                            {stylists.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.nombre}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">
+                          Q{service.price} • {service.duration} min • {service.commissionRate}% comisión
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveService(index)}
+                          className="text-red-500 hover:bg-red-50 px-3 py-1 rounded-lg transition-colors text-sm font-semibold"
+                        >
+                          🗑️ Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {formData.services.length === 0 && (
+                    <div className="text-center py-8 text-gray-400">
+                      No hay servicios agregados
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Notas */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">
+                  Notas
+                </label>
+                <textarea
+                  value={formData.notes}
+                  onChange={(e) => setFormData({...formData, notes: e.target.value})}
+                  className="input-field"
+                  rows="3"
+                  placeholder="Observaciones adicionales..."
+                />
+              </div>
+
+              {/* Total */}
+              {formData.services.length > 0 && (
+                <div className="bg-primary-50 p-4 rounded-xl border-2 border-primary-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-lg font-bold text-gray-800">Total:</span>
+                    <span className="text-2xl font-black text-primary-600">
+                      Q {formData.services.reduce((sum, s) => sum + s.price, 0).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Botones */}
+              <div className="flex gap-3 pt-4">
+                {isEditMode && (
+                  <button 
+                    type="button"
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg flex-1"
+                  >
+                    🗑️ Eliminar
+                  </button>
+                )}
+                <button
+                  type="button" 
+                  onClick={() => { setShowModal(false); resetForm(); }}
+                  className="btn-secondary flex-1"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit"
+                  className="btn-primary flex-1"
+                  disabled={formData.services.length === 0}
+                >
+                  {isEditMode ? "✓ Actualizar Cita" : "✓ Crear Cita"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Modal de confirmación de eliminación */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-bold mb-4 text-gray-800">⚠️ Confirmar Eliminación</h3>
+            <p className="text-gray-600 mb-6">
+              ¿Estás seguro de eliminar esta cita?
+              <br/>
+              <strong>Cliente:</strong> {selectedAppointment?.clientName}
+              <br/>
+              <strong>Fecha:</strong> {selectedAppointment?.date} {selectedAppointment?.startTime}
+            </p>
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowDeleteConfirm(false)}
+                className="btn-secondary flex-1"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleDeleteAppointment}
+                className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg flex-1"
+              >
+                🗑️ Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Layout>
+  );
+};

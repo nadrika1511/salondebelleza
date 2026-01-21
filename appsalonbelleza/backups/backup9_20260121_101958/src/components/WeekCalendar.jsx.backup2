@@ -1,0 +1,108 @@
+import { useState, useEffect } from 'react';
+
+export const WeekCalendar = ({ selectedDate, onDateChange, appointments }) => {
+  const [weekDates, setWeekDates] = useState([]);
+
+  useEffect(() => {
+    generateWeekDates(selectedDate);
+  }, [selectedDate]);
+
+  const getLocalDateString = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const generateWeekDates = (date) => {
+    const current = new Date(date);
+    const first = current.getDate() - current.getDay();
+    const dates = [];
+    
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(current);
+      day.setDate(first + i);
+      
+      const today = new Date();
+      const todayStr = getLocalDateString(today);
+      const dayStr = getLocalDateString(day);
+      
+      dates.push({
+        date: dayStr,
+        dayName: day.toLocaleDateString('es-GT', { weekday: 'short' }),
+        dayNumber: day.getDate(),
+        isToday: dayStr === todayStr
+      });
+    }
+    
+    setWeekDates(dates);
+  };
+
+  const getAppointmentsByDate = (date) => {
+    return appointments.filter(apt => apt.date === date);
+  };
+
+  const getStatusColor = (status) => {
+    const colors = {
+      'scheduled': 'bg-blue-100 border-blue-400 text-blue-800',
+      'in-progress': 'bg-yellow-100 border-yellow-400 text-yellow-800',
+      'completed': 'bg-green-100 border-green-400 text-green-800',
+      'cancelled': 'bg-red-100 border-red-400 text-red-800'
+    };
+    return colors[status] || 'bg-gray-100 border-gray-400 text-gray-800';
+  };
+
+  const getStatusIcon = (status) => {
+    const icons = {
+      'scheduled': '📅',
+      'in-progress': '⏳',
+      'completed': '✅',
+      'cancelled': '❌'
+    };
+    return icons[status] || '📋';
+  };
+
+  const hours = Array.from({ length: 13 }, (_, i) => i + 8);
+
+  return (
+    <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+      <div className="grid grid-cols-8 border-b sticky top-0 bg-white z-10">
+        <div className="p-4 border-r bg-gray-50 font-semibold text-gray-600">
+          Hora
+        </div>
+        {weekDates.map((day) => (
+          <div key={day.date} className={`p-4 text-center border-r ${day.isToday ? 'bg-primary-50' : 'bg-gray-50'}`}>
+            <div className="text-xs font-semibold text-gray-500 uppercase">{day.dayName}</div>
+            <div className={`text-2xl font-bold mt-1 ${day.isToday ? 'text-primary-600' : 'text-gray-800'}`}>{day.dayNumber}</div>
+          </div>
+        ))}
+      </div>
+      <div className="overflow-y-auto max-h-[600px]">
+        {hours.map((hour) => (
+          <div key={hour} className="grid grid-cols-8 border-b hover:bg-gray-50">
+            <div className="p-4 border-r bg-gray-50 text-sm font-semibold text-gray-600">{hour}:00</div>
+            {weekDates.map((day) => {
+              const dayAppointments = getAppointmentsByDate(day.date).filter(apt => parseInt(apt.startTime.split(':')[0]) === hour);
+              return (
+                <div key={`${day.date}-${hour}`} className="p-2 border-r min-h-[80px] cursor-pointer hover:bg-primary-50 transition-colors" onClick={() => onDateChange(day.date, `${hour}:00`)}>
+                  <div className="space-y-1">
+                    {dayAppointments.map((apt) => (
+                      <div key={apt.id} className={`text-xs p-2 rounded-lg border-l-4 ${getStatusColor(apt.status)} cursor-pointer hover:shadow-md transition-shadow`} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1 mb-1">
+                          <span>{getStatusIcon(apt.status)}</span>
+                          <span className="font-bold">{apt.startTime}</span>
+                        </div>
+                        <div className="font-semibold truncate">{apt.clientName}</div>
+                        <div className="text-[10px] opacity-75">{apt.totalServices} servicio{apt.totalServices > 1 ? 's' : ''}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
