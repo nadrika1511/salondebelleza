@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Layout } from '../components/Layout';
 import { useAuth } from '../contexts/AuthContext';
 import { 
@@ -138,6 +138,9 @@ export const Orders = () => {
     }
 
     if (!order.tips) {
+    if (!order.packagesSold) {
+      order.packagesSold = [];
+    }
       order.tips = {};
     }
 
@@ -387,6 +390,7 @@ export const Orders = () => {
     ).filter(Boolean);
   };
 
+  console.log("🔍 editedOrder.packagesSold:", editedOrder?.packagesSold);
   const totals = calculateTotals();
 
   if (loading && view !== 'history') {
