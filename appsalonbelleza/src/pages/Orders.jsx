@@ -300,6 +300,22 @@ export const Orders = () => {
     }
   };
 
+  const canPayWithPackage = () => {
+    if (!editedOrder) return false;
+    
+    // Debe tener paquetes vendidos
+    const hasPackagesSold = (editedOrder.packagesSold || []).length > 0;
+    
+    // NO debe tener servicios seleccionados
+    const hasServices = (editedOrder.services || []).some(s => s.selected);
+    
+    // NO debe tener productos
+    const hasProducts = (editedOrder.products || []).length > 0;
+    
+    // Solo puede pagar con paquete si ÚNICAMENTE vendió paquetes
+    return hasPackagesSold && !hasServices && !hasProducts;
+  };
+
   const handleCloseOrder = () => {
     const totals = calculateTotals();
     if (totals.total === 0) {
